@@ -3,6 +3,7 @@ from mud import mud_algorithm
 from allocation import build_mcmf, solve_mcmf, plot_graph
 from simulation import simpy_run
 
+
 def main():
     es_dict = {
         'ES1': EdgeServer('ES1', 20, 214, 81.6, 150),
@@ -46,14 +47,12 @@ def main():
     timeline = simpy_run(tasks, es_dict, allocations)
     for t in timeline:
         print(f"{t[0]}: {t[1]}")
+
 
 if __name__ == "__main__":
     main()
 # main.py
-from models import EdgeServer, Task
-from mud import mud_algorithm
-from allocation import build_mcmf, solve_mcmf, plot_graph
-from simulation import simpy_run
+
 
 def main():
     es_dict = {
@@ -98,6 +97,7 @@ def main():
     timeline = simpy_run(tasks, es_dict, allocations)
     for t in timeline:
         print(f"{t[0]}: {t[1]}")
+
 
 if __name__ == "__main__":
     main()
