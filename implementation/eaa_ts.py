@@ -7,22 +7,6 @@ class EAA_TS:
         self.edge_servers = edge_servers
         self.Y = Y
 
-    def power_function(self, es, utilization):
-        coeffs = es.power_active_coeffs
-        utils = sorted(coeffs.keys())
-        if utilization <= utils[0]:
-            alpha = coeffs[utils[0]]
-        elif utilization >= utils[-1]:
-            alpha = coeffs[utils[-1]]
-        else:
-            for i in range(len(utils)-1):
-                if utils[i] <= utilization <= utils[i+1]:
-                    u1, u2 = utils[i], utils[i+1]
-                    a1, a2 = coeffs[u1], coeffs[u2]
-                    alpha = a1 + (a2 - a1) * (utilization - u1) / (u2 - u1)
-                    break
-        return alpha * utilization + es.power_idle * (1 - utilization)
-
     def build_mcmf_graph(self):
         G = nx.DiGraph()
         total_task_usage = sum(task.usage for task in self.tasks)
