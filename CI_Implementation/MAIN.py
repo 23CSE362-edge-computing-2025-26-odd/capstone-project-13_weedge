@@ -1,9 +1,9 @@
 import numpy as np
 
 # Import your 3 phases
-from fuzzy_phase import fuzzy_phase
-from pso_phase import pso_allocate
-from aco_phase import aco_allocate
+from PHASE1FUZZY import fuzzy_phase
+from PHASE2PSO import pso_allocate
+from PHASE2ACO import aco_allocate
 
 # ----------------- Sample Task & Server Classes -----------------
 class Task:
