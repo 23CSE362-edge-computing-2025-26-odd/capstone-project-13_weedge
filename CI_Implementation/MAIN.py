@@ -8,20 +8,20 @@ from pso_aco_module import pso_allocate, aco_allocate
 from edge_sim_py import Simulator, ComponentManager, EdgeServer, Service, Application
 
 # -------------------------------------------------------------
-# Step 1 – Parse CSV datasets → EdgeSimPy JSON
+# Step 1 – Parse CSV datasets and generate EdgeSimPy JSON format
 # -------------------------------------------------------------
-print("📂 Parsing datasets and creating EdgeSimPy-compatible dataset...")
+print("Parsing datasets and creating EdgeSimPy-compatible dataset...")
 dataset = create_edgesimpy_dataset(
     "task_dataset.csv",
     "SPECpower_ssj2008_Results.csv",
     "edgesimpy_dataset.json"
 )
-print("✅ Created EdgeSimPy dataset: edgesimpy_dataset.json")
+print("Dataset created: edgesimpy_dataset.json")
 
 task_df = pd.read_csv("task_dataset.csv")
 
 # -------------------------------------------------------------
-# Step 2 – Load dataset and initialize environment
+# Step 2 – Load dataset and initialize EdgeSimPy environment
 # -------------------------------------------------------------
 with open("edgesimpy_dataset.json") as f:
     data = json.load(f)
@@ -30,6 +30,7 @@ cm = ComponentManager()
 sim = Simulator(cm)
 
 def get_attr(d, key, default=None):
+    """Safely fetch an attribute from the JSON dictionary."""
     if isinstance(d, dict) and "attributes" in d:
         return d["attributes"].get(key, default)
     return d.get(key, default) if isinstance(d, dict) else default
@@ -46,9 +47,10 @@ applications_data = data["Application"][:N_TASKS]
 services_data = data["Service"][:N_TASKS]
 
 # -------------------------------------------------------------
-# Step 3 – Create simulator components
+# Step 3 – Create EdgeSimPy components
 # -------------------------------------------------------------
 edge_servers, applications, services = [], [], []
+
 for s in servers_data:
     srv = EdgeServer()
     srv.id = get_attr(s, "id")
@@ -75,7 +77,7 @@ sim.edge_servers, sim.applications, sim.services = edge_servers, applications, s
 # -------------------------------------------------------------
 # Step 4 – Compute fuzzy-based Y_hat values
 # -------------------------------------------------------------
-print("⚙️ Computing fuzzy-based Y_hat values...")
+print("Computing fuzzy-based Y_hat values...")
 
 num_servers = len(edge_servers)
 server_util = np.zeros(num_servers)
@@ -96,7 +98,7 @@ C = np.array([get_attr(s, "cpu", 1000) for s in servers_data], dtype=float)
 idle = np.array([get_attr(s, "idle_watts", 100.0) for s in servers_data], dtype=float)
 max_watts = np.array([get_attr(s, "max_watts", idle[i] + 100.0) for i, s in enumerate(servers_data)], dtype=float)
 
-# Fuzzy per-server computation
+# Compute per-server fuzzy scores
 fuzzy_scores = np.zeros(num_servers)
 for i in range(num_servers):
     reward_component = np.clip((server_util[i] / (np.max(server_util) + 1e-9)) * 100, 0, 100)
@@ -104,24 +106,25 @@ for i in range(num_servers):
     util_component = np.clip((C[i] / np.max(C)) * 100, 0, 100)
     fuzzy_scores[i] = fuzzy_priority(reward_component, power_component, util_component)
 
-# Normalize fuzzy scores to [0.4, 1.0]
+# Normalize fuzzy scores
 fuzzy_scores = 0.4 + (fuzzy_scores - np.min(fuzzy_scores)) / (np.ptp(fuzzy_scores) + 1e-9) * 0.6
 
-# Compute final Y_hat as fuzzy-weighted capacity × relative power efficiency
+# Compute final Y_hat
 y_hat = C * fuzzy_scores * ((max_watts - idle) / np.mean(max_watts - idle))
 
-# Save Y_hat
 pd.DataFrame({
     "Server_ID": np.arange(1, num_servers + 1),
     "Y_hat": y_hat,
     "Fuzzy_Score": fuzzy_scores
 }).to_csv("y_hat.csv", index=False)
-print("✅ Computed heterogeneous Y_hat values using adaptive fuzzy logic.")
+
+print("Fuzzy heterogeneous Y_hat values computed.")
 
 # -------------------------------------------------------------
-# Step 5 – Run PSO and ACO Allocations
+# Step 5 – Run PSO and ACO allocations
 # -------------------------------------------------------------
 U = np.array([get_attr(a, "cpu_demand", 10) for a in applications_data], dtype=float)
+
 R = []
 for a in applications_data:
     reward = (
@@ -133,34 +136,32 @@ for a in applications_data:
     R.append(fuzzy_priority(reward, power_est, get_attr(a, "cpu_demand", 10)))
 R = np.tile(np.array(R).reshape(-1, 1), (1, len(C)))
 
-print("\n🚀 Running PSO allocation (task splitting)...")
+print("Running PSO allocation...")
 pso_X = pso_allocate(U, R, C, idle, np.ones(num_servers), np.sum(max_watts) * POWER_LIMIT_FACTOR)
 pd.DataFrame(pso_X).to_csv("pso_X.csv", index=False)
-print("✅ PSO Allocation complete.")
+print("PSO allocation completed.")
 
-print("🚀 Running ACO allocation (non-splitting)...")
+print("Running ACO allocation...")
 aco_X = aco_allocate(U, R, C, idle, np.ones(num_servers), np.sum(max_watts) * POWER_LIMIT_FACTOR)
 pd.DataFrame(aco_X).to_csv("aco_X.csv", index=False)
-print("✅ ACO Allocation complete.")
+print("ACO allocation completed.")
 
 # -------------------------------------------------------------
-# Step 6 – Simulation-style terminal output
+# Step 6 – Display allocation summary for first few tasks
 # -------------------------------------------------------------
-print("\nSetting up environment and generating tasks...")
-print("Running simulation...")
+print("Setting up simulation environment...")
 
 y_hat_dict = {i + 1: round(float(y_hat[i]), 2) for i in range(num_servers)}
-print(f"Maximum allowable utilizations (Y): {y_hat_dict}")
+print("Maximum allowable utilizations (Y):", y_hat_dict)
 
-# Only show first 20 tasks for brevity
 pso_alloc = {i + 1: list(np.where(pso_X[i] > 0.1)[0] + 1) for i in range(min(20, len(U)))}
 aco_alloc = {i + 1: int(np.argmax(aco_X[i]) + 1) for i in range(min(20, len(U)))}
 
-print(f"CI-PSO allocation (task-splitting): {pso_alloc}")
-print(f"CI-ACO allocation (non-splitting): {aco_alloc}")
+print("PSO allocation:", pso_alloc)
+print("ACO allocation:", aco_alloc)
 
 # -------------------------------------------------------------
-# Step 7 – Task rewards, latency, and top 15 output
+# Step 7 – Compute task reward metrics
 # -------------------------------------------------------------
 task_rewards = []
 for i in range(U.shape[0]):
@@ -175,12 +176,11 @@ task_rewards_df.to_csv("task_rewards.csv", index=False)
 
 top15 = task_rewards_df.sort_values(by="Reward", ascending=False).head(15)
 top15.to_csv("top_tasks.csv", index=False)
-
-print("\n--- Task metrics (top 15 by reward) ---")
+print("\nTop 15 tasks by reward:")
 print(top15.to_string(index=False))
 
 # -------------------------------------------------------------
-# Step 8 – Summary
+# Step 8 – Final performance summary
 # -------------------------------------------------------------
 pso_reward = np.sum(R * (U.reshape(-1, 1) * pso_X))
 pso_load = (U.reshape(-1, 1) * pso_X).sum(axis=0)
@@ -190,7 +190,7 @@ aco_reward = np.sum(R * (U.reshape(-1, 1) * aco_X))
 aco_load = (U.reshape(-1, 1) * aco_X).sum(axis=0)
 aco_power = np.sum(idle + ((aco_load / C) ** 2) * (max_watts - idle))
 
-print(f"\nSummary:")
-print(f"   PSO total reward = {pso_reward:.2f}, total power = {pso_power:.2f}")
-print(f"   ACO total reward = {aco_reward:.2f}, total power = {aco_power:.2f}")
-print("\n✅ All output files saved: y_hat.csv, pso_X.csv, aco_X.csv, task_rewards.csv, top_tasks.csv")
+print("\nSummary:")
+print(f"PSO total reward = {pso_reward:.2f}, total power = {pso_power:.2f}")
+print(f"ACO total reward = {aco_reward:.2f}, total power = {aco_power:.2f}")
+print("\nOutput files generated: y_hat.csv, pso_X.csv, aco_X.csv, task_rewards.csv, top_tasks.csv")
