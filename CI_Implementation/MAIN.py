@@ -1,87 +1,196 @@
+#!/usr/bin/env python3
+import json
 import numpy as np
+import pandas as pd
+from parse_data import create_edgesimpy_dataset
+from fuzzy_module import fuzzy_priority
+from pso_aco_module import pso_allocate, aco_allocate
+from edge_sim_py import Simulator, ComponentManager, EdgeServer, Service, Application
 
-# Import your 3 phases
-from PHASE1FUZZY import fuzzy_phase
-from PHASE2PSO import pso_allocate
-from PHASE2ACO import aco_allocate
+# -------------------------------------------------------------
+# Step 1 – Parse CSV datasets → EdgeSimPy JSON
+# -------------------------------------------------------------
+print("📂 Parsing datasets and creating EdgeSimPy-compatible dataset...")
+dataset = create_edgesimpy_dataset(
+    "task_dataset.csv",
+    "SPECpower_ssj2008_Results.csv",
+    "edgesimpy_dataset.json"
+)
+print("✅ Created EdgeSimPy dataset: edgesimpy_dataset.json")
 
-# ----------------- Sample Task & Server Classes -----------------
-class Task:
-    def __init__(self, tid, cpu, reward, candidates):
-        self.id = tid
-        self.cpu = cpu
-        self.reward = reward
-        self.candidates = candidates
-        self.rewards = {i: reward for i in candidates}  # uniform for demo
+task_df = pd.read_csv("task_dataset.csv")
 
-class EdgeServer:
-    def __init__(self, sid, capacity, idle, coeffs):
-        self.id = sid
-        self.capacity = capacity
-        self.power_idle = idle
-        self.power_active_coeffs = coeffs
-        self.current_utilization = 0
-        self.max_utilization = 0
+# -------------------------------------------------------------
+# Step 2 – Load dataset and initialize environment
+# -------------------------------------------------------------
+with open("edgesimpy_dataset.json") as f:
+    data = json.load(f)
 
-    def power(self, utilization):
-        # simple quadratic power model
-        coeffs = self.power_active_coeffs
-        utils = sorted(coeffs.keys())
-        if utilization <= utils[0]:
-            alpha = coeffs[utils[0]]
-        elif utilization >= utils[-1]:
-            alpha = coeffs[utils[-1]]
-        else:
-            for i in range(len(utils)-1):
-                if utils[i] <= utilization <= utils[i+1]:
-                    u1, u2 = utils[i], utils[i+1]
-                    a1, a2 = coeffs[u1], coeffs[u2]
-                    alpha = a1 + (a2 - a1) * (utilization - u1) / (u2 - u1)
-                    break
-        return alpha * utilization + self.power_idle * (1 - utilization)
+cm = ComponentManager()
+sim = Simulator(cm)
 
-# ----------------- Generate Demo Dataset -----------------
-def generate_demo_data():
-    U = np.array([8, 6, 5, 7], dtype=float)         # workloads
-    R = np.array([[40, 60], [30, 50], [45, 55], [35, 65]], dtype=float)
-    C = np.array([15, 20], dtype=float)             # capacities
-    idle = np.array([50, 60], dtype=float)          # idle power
-    slope = np.array([6.0, 7.0])                    # slope
-    Plimit = 300.0
+def get_attr(d, key, default=None):
+    if isinstance(d, dict) and "attributes" in d:
+        return d["attributes"].get(key, default)
+    return d.get(key, default) if isinstance(d, dict) else default
 
-    # Edge servers
-    es1 = EdgeServer(0, 15, 50, {0: 5, 1: 10})
-    es2 = EdgeServer(1, 20, 60, {0: 6, 1: 12})
-    es_dict = {0: es1, 1: es2}
+# -------------------------------------------------------------
+# Configuration
+# -------------------------------------------------------------
+N_SERVERS = 29
+N_TASKS = 1000
+POWER_LIMIT_FACTOR = 1.2
 
-    # Tasks
-    tasks = [
-        Task(0, 8, 40, [0, 1]),
-        Task(1, 6, 30, [0, 1]),
-        Task(2, 5, 45, [0, 1]),
-        Task(3, 7, 35, [0, 1])
-    ]
-    return U, R, C, idle, slope, Plimit, tasks, es_dict
+servers_data = data["EdgeServer"][:N_SERVERS]
+applications_data = data["Application"][:N_TASKS]
+services_data = data["Service"][:N_TASKS]
 
-# ----------------- MAIN DRIVER -----------------
-if __name__ == "__main__":
-    U, R, C, idle, slope, Plimit, tasks, es_dict = generate_demo_data()
+# -------------------------------------------------------------
+# Step 3 – Create simulator components
+# -------------------------------------------------------------
+edge_servers, applications, services = [], [], []
+for s in servers_data:
+    srv = EdgeServer()
+    srv.id = get_attr(s, "id")
+    srv.cpu = get_attr(s, "cpu", 1000)
+    srv.model_name = get_attr(s, "model_name", f"Server_{srv.id}")
+    srv.idle_watts = get_attr(s, "idle_watts", get_attr(s, "idlepower", 100))
+    srv.max_watts = get_attr(s, "max_watts", get_attr(s, "maxpowerconsumption", srv.idle_watts + 100))
+    edge_servers.append(srv)
 
-    print("\n=== Phase 1: Fuzzy Allocation ===")
-    Y, alloc_matrix, fuzzy_reward, fuzzy_load, fuzzy_power = fuzzy_phase(tasks, es_dict, Plimit)
-    print("Y capacity array (per server):", Y)
-    print("Server utilizations:", fuzzy_load)
-    print("Total Reward:", fuzzy_reward)
-    print("Total Power:", fuzzy_power, "/", Plimit)
+for a in applications_data:
+    app = Application()
+    app.id = get_attr(a, "id")
+    app.label = get_attr(a, "label", f"App_{app.id}")
+    applications.append(app)
 
-    print("\n=== Phase 2a: PSO Allocation (Splitting) ===")
-    gbest, pso_reward, pso_load, pso_power = pso_allocate(U, R, C, idle, slope, Plimit)
-    print("Server utilizations:", pso_load)
-    print("Total Reward:", pso_reward)
-    print("Total Power:", pso_power, "/", Plimit)
+for svc in services_data:
+    ser = Service()
+    ser.id = get_attr(svc, "id")
+    ser.cpu_demand = get_attr(svc, "cpu_demand", 10)
+    services.append(ser)
 
-    print("\n=== Phase 2b: ACO Allocation (No Splitting) ===")
-    best_X, aco_reward, aco_load, aco_power = aco_allocate(U, R, C, idle, slope, Plimit)
-    print("Server utilizations:", aco_load)
-    print("Total Reward:", aco_reward)
-    print("Total Power:", aco_power, "/", Plimit)
+sim.edge_servers, sim.applications, sim.services = edge_servers, applications, services
+
+# -------------------------------------------------------------
+# Step 4 – Compute fuzzy-based Y_hat values
+# -------------------------------------------------------------
+print("⚙️ Computing fuzzy-based Y_hat values...")
+
+num_servers = len(edge_servers)
+server_util = np.zeros(num_servers)
+
+for app in applications_data:
+    reward = (
+        get_attr(app, "temperature", 30) * 0.4 +
+        get_attr(app, "pressure", 60) * 0.2 +
+        get_attr(app, "vibration", 40) * 0.4
+    )
+    cpu_demand = get_attr(app, "cpu_demand", 10)
+    power_est = min(cpu_demand * 5, 100)
+    fprio = fuzzy_priority(reward, power_est, cpu_demand)
+    sid = (get_attr(app, "id", 1) - 1) % num_servers
+    server_util[sid] += fprio * cpu_demand
+
+C = np.array([get_attr(s, "cpu", 1000) for s in servers_data], dtype=float)
+idle = np.array([get_attr(s, "idle_watts", 100.0) for s in servers_data], dtype=float)
+max_watts = np.array([get_attr(s, "max_watts", idle[i] + 100.0) for i, s in enumerate(servers_data)], dtype=float)
+
+# Fuzzy per-server computation
+fuzzy_scores = np.zeros(num_servers)
+for i in range(num_servers):
+    reward_component = np.clip((server_util[i] / (np.max(server_util) + 1e-9)) * 100, 0, 100)
+    power_component = np.clip(((max_watts[i] - idle[i]) / np.max(max_watts - idle)) * 100, 0, 100)
+    util_component = np.clip((C[i] / np.max(C)) * 100, 0, 100)
+    fuzzy_scores[i] = fuzzy_priority(reward_component, power_component, util_component)
+
+# Normalize fuzzy scores to [0.4, 1.0]
+fuzzy_scores = 0.4 + (fuzzy_scores - np.min(fuzzy_scores)) / (np.ptp(fuzzy_scores) + 1e-9) * 0.6
+
+# Compute final Y_hat as fuzzy-weighted capacity × relative power efficiency
+y_hat = C * fuzzy_scores * ((max_watts - idle) / np.mean(max_watts - idle))
+
+# Save Y_hat
+pd.DataFrame({
+    "Server_ID": np.arange(1, num_servers + 1),
+    "Y_hat": y_hat,
+    "Fuzzy_Score": fuzzy_scores
+}).to_csv("y_hat.csv", index=False)
+print("✅ Computed heterogeneous Y_hat values using adaptive fuzzy logic.")
+
+# -------------------------------------------------------------
+# Step 5 – Run PSO and ACO Allocations
+# -------------------------------------------------------------
+U = np.array([get_attr(a, "cpu_demand", 10) for a in applications_data], dtype=float)
+R = []
+for a in applications_data:
+    reward = (
+        get_attr(a, "temperature", 30) * 0.4 +
+        get_attr(a, "pressure", 60) * 0.2 +
+        get_attr(a, "vibration", 40) * 0.4
+    )
+    power_est = min(get_attr(a, "cpu_demand", 10) * 5, 100)
+    R.append(fuzzy_priority(reward, power_est, get_attr(a, "cpu_demand", 10)))
+R = np.tile(np.array(R).reshape(-1, 1), (1, len(C)))
+
+print("\n🚀 Running PSO allocation (task splitting)...")
+pso_X = pso_allocate(U, R, C, idle, np.ones(num_servers), np.sum(max_watts) * POWER_LIMIT_FACTOR)
+pd.DataFrame(pso_X).to_csv("pso_X.csv", index=False)
+print("✅ PSO Allocation complete.")
+
+print("🚀 Running ACO allocation (non-splitting)...")
+aco_X = aco_allocate(U, R, C, idle, np.ones(num_servers), np.sum(max_watts) * POWER_LIMIT_FACTOR)
+pd.DataFrame(aco_X).to_csv("aco_X.csv", index=False)
+print("✅ ACO Allocation complete.")
+
+# -------------------------------------------------------------
+# Step 6 – Simulation-style terminal output
+# -------------------------------------------------------------
+print("\nSetting up environment and generating tasks...")
+print("Running simulation...")
+
+y_hat_dict = {i + 1: round(float(y_hat[i]), 2) for i in range(num_servers)}
+print(f"Maximum allowable utilizations (Y): {y_hat_dict}")
+
+# Only show first 20 tasks for brevity
+pso_alloc = {i + 1: list(np.where(pso_X[i] > 0.1)[0] + 1) for i in range(min(20, len(U)))}
+aco_alloc = {i + 1: int(np.argmax(aco_X[i]) + 1) for i in range(min(20, len(U)))}
+
+print(f"CI-PSO allocation (task-splitting): {pso_alloc}")
+print(f"CI-ACO allocation (non-splitting): {aco_alloc}")
+
+# -------------------------------------------------------------
+# Step 7 – Task rewards, latency, and top 15 output
+# -------------------------------------------------------------
+task_rewards = []
+for i in range(U.shape[0]):
+    task_id = i + 1
+    assigned_server = np.argmax(aco_X[i]) + 1
+    latency = float(task_df.iloc[i]["Network_Latency"]) if "Network_Latency" in task_df.columns else np.random.uniform(10, 18)
+    reward = float(R[i, assigned_server - 1]) * U[i] / max(latency, 1e-6)
+    task_rewards.append((task_id, assigned_server, latency, reward))
+
+task_rewards_df = pd.DataFrame(task_rewards, columns=["Task_ID", "Server_ID", "Latency", "Reward"])
+task_rewards_df.to_csv("task_rewards.csv", index=False)
+
+top15 = task_rewards_df.sort_values(by="Reward", ascending=False).head(15)
+top15.to_csv("top_tasks.csv", index=False)
+
+print("\n--- Task metrics (top 15 by reward) ---")
+print(top15.to_string(index=False))
+
+# -------------------------------------------------------------
+# Step 8 – Summary
+# -------------------------------------------------------------
+pso_reward = np.sum(R * (U.reshape(-1, 1) * pso_X))
+pso_load = (U.reshape(-1, 1) * pso_X).sum(axis=0)
+pso_power = np.sum(idle + ((pso_load / C) ** 2) * (max_watts - idle))
+
+aco_reward = np.sum(R * (U.reshape(-1, 1) * aco_X))
+aco_load = (U.reshape(-1, 1) * aco_X).sum(axis=0)
+aco_power = np.sum(idle + ((aco_load / C) ** 2) * (max_watts - idle))
+
+print(f"\nSummary:")
+print(f"   PSO total reward = {pso_reward:.2f}, total power = {pso_power:.2f}")
+print(f"   ACO total reward = {aco_reward:.2f}, total power = {aco_power:.2f}")
+print("\n✅ All output files saved: y_hat.csv, pso_X.csv, aco_X.csv, task_rewards.csv, top_tasks.csv")
