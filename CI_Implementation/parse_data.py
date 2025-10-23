@@ -56,5 +56,5 @@ def create_edgesimpy_dataset(task_csv, spec_csv, output_json="edgesimpy_dataset.
     with open(output_json, "w") as f:
         json.dump(dataset, f, indent=4)
 
-    print(f"✅ Created EdgeSimPy dataset: {output_json}")
+    print(f"Created EdgeSimPy dataset: {output_json}")
     return dataset
